@@ -1,4 +1,11 @@
 <launch>
    <param name="use_sim_time" value="true"/>
-   <node name="LaserUndistortion_Node" pkg="LaserUndistortion"  type="LaserUndistortion_node" output="log" />
+
+   <node name="LaserUndistortion_Node" pkg="LaserUndistortion"  type="LaserUndistortion_node" output="log">
+      <param name="lidar_sub_topic" value="/scan"/>
+      <param name="lidar_pub_topic" value="/lidar_undistortion/scan"/>
+      <param name="lidar_frame" value="laser_link"/>
+      <param name="odom_frame" value="odom"/>
+   </node>
+
 </launch>

@@ -2,14 +2,14 @@
 #include <tf/tf.h>
 #include <tf/transform_broadcaster.h>
 #include <tf/transform_listener.h>
-
 #include <sensor_msgs/LaserScan.h>
-
-#include <champion_nav_msgs/ChampionNavLaserScan.h>
+#include <sensor_msgs/PointCloud2.h>
 
 #include <pcl-1.7/pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl-1.7/pcl/visualization/cloud_viewer.h>
+#include <pcl/point_cloud.h>
+#include <pcl_conversions/pcl_conversions.h>
 
 #include <iostream>
 #include <dirent.h>
@@ -20,61 +20,125 @@ pcl::visualization::CloudViewer g_PointCloudView("PointCloud View");
 
 class LidarMotionCalibrator
 {
+private:
+    
+    ros::NodeHandle nh_;
+    ros::Subscriber scan_sub_;
+    ros::Publisher scan_pub_;
+    ros::Publisher pointcloud_pub_;
+
+    tf::TransformListener* tf_;
+
+    std::string scan_sub_topic_;
+    std::string scan_pub_topic_;
+    std::string pointcloud_pub_topic_;
+    std::string lidar_frame_;
+    std::string odom_frame_;
+
+    pcl::PointCloud<pcl::PointXYZRGB> visual_cloud_;
+
 public:
 
-    LidarMotionCalibrator(tf::TransformListener* tf)
+    LidarMotionCalibrator(ros::NodeHandle node_handle)
     {
-        tf_ = tf;
-        scan_sub_ = nh_.subscribe("champion_scan", 10, &LidarMotionCalibrator::ScanCallBack, this);
+        nh_ = node_handle;
+        tf_ = new tf::TransformListener(ros::Duration(10.0));
+
+        ros::NodeHandle nh_param("~");
+        nh_param.param<std::string>("scan_sub_topic", scan_sub_topic_, "/scan");
+        nh_param.param<std::string>("scan_pub_topic", scan_pub_topic_, "/lidar_undistortion/scan");
+        nh_param.param<std::string>("point_cloud_pub_topic", pointcloud_pub_topic_, "/lidar_undistortion/pointcloud");
+        nh_param.param<std::string>("lidar_frame", lidar_frame_, "laser_link");
+        nh_param.param<std::string>("odom_frame", odom_frame_, "oodm");
+
+        scan_sub_ = nh_.subscribe(scan_sub_topic_, 10, &LidarMotionCalibrator::ScanCallBack, this);
+        scan_pub_ = nh_.advertise<sensor_msgs::LaserScan>(scan_pub_topic_, 1);
+        pointcloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(pointcloud_pub_topic_, 1);
     }
 
 
     ~LidarMotionCalibrator()
     {
-        if(tf_!=NULL)
-            delete tf_;
+        if(tf_!=NULL) delete tf_;
     }
 
     // 拿到原始的激光数据来进行处理
-    void ScanCallBack(const champion_nav_msgs::ChampionNavLaserScanPtr& scan_msg)
+    void ScanCallBack(const sensor_msgs::LaserScanConstPtr& scan_msg)
     {
-        //转换到矫正需要的数据
+        // 转换到矫正需要的数据
         ros::Time startTime, endTime;
         startTime = scan_msg->header.stamp;
 
-        champion_nav_msgs::ChampionNavLaserScan laserScanMsg = *scan_msg;
-
-        //得到最终点的时间
-        int beamNum = laserScanMsg.ranges.size();
-        endTime = startTime + ros::Duration(laserScanMsg.time_increment * beamNum);
+        // 得到最终点的时间
+        int beamNum = scan_msg->ranges.size();
+        endTime = startTime + ros::Duration(0.00024953688262 * beamNum);
 
         // 将数据复制出来
-        std::vector<double> angles,ranges;
-        for(int i = beamNum - 1; i > 0;i--)
-        {   
-            double lidar_dist = laserScanMsg.ranges[i];
-            double lidar_angle = laserScanMsg.angles[i];
+        std::vector<double> angles;
+        std::vector<float> ranges;
+        std::vector<float> intensities;
 
-            if(lidar_dist < 0.05 || std::isnan(lidar_dist) || std::isinf(lidar_dist))
+        for(int alpha = beamNum - 1; alpha >= 0; alpha--)
+        {
+            double lidar_dist = scan_msg->ranges[alpha];
+
+            if(std::isnan(lidar_dist) || lidar_dist < scan_msg->range_min)
                 lidar_dist = 0.0;
 
+            intensities.push_back(scan_msg->intensities[alpha]);
             ranges.push_back(lidar_dist);
-            angles.push_back(lidar_angle);
+            angles.push_back(scan_msg->angle_min + scan_msg->angle_increment * alpha);
         }
 
-        //转换为pcl::pointcloud for visuailization
-
-        tf::Stamped<tf::Pose> visualPose;
-        if(!getLaserPose(visualPose, startTime, tf_))
+        tf::Stamped<tf::Pose> start_pose, end_pose;
+        if(!getLaserPose(start_pose, ros::Time(startTime), tf_))
         {
+            ROS_WARN("Not Start Pose,Can not Calib");
+            return ;
+        }
+        if(!getLaserPose(end_pose,ros::Time(endTime), tf_))
+        {
+            ROS_WARN("Not End Pose, Can not Calib");
+            return ;
+        }
 
+        visual_cloud_.clear();
+        visualizeLaserScan(startTime, ranges, angles, 255, 0, 0);
+
+        // ROS_INFO("calibration start");
+        // 进行矫正
+        Lidar_Calibration(ranges,
+                          angles,
+                          startTime,
+                          endTime,
+                          tf_);
+
+        // ROS_INFO("calibration end");
+
+        visualizeLaserScan(startTime, ranges, angles, 0, 0, 255);
+
+        publishPointCloud2(startTime, angles, ranges, intensities);  
+        publishScan(scan_msg, ranges, angles, start_pose, end_pose);
+
+        g_PointCloudView.showCloud(visual_cloud_.makeShared());
+    }
+
+    void visualizeLaserScan(ros::Time start_time,
+                            std::vector<float>& ranges,
+                            std::vector<double>& angles,
+                            unsigned char r,
+                            unsigned char g,
+                            unsigned char b)
+    {
+        tf::Stamped<tf::Pose> visualPose;
+        if(!getLaserPose(visualPose, start_time, tf_))
+        {
             ROS_WARN("Not visualPose,Can not Calib");
             return ;
         }
 
         double visualYaw = tf::getYaw(visualPose.getRotation());
 
-        visual_cloud_.clear();
         for(int i = 0; i < ranges.size();i++)
         {
 
@@ -90,47 +154,35 @@ public:
             pt.z = 1.0;
 
             // pack r/g/b into rgb
-            unsigned char r = 255, g = 0, b = 0;    //red color
+            // unsigned char r = 255, g = 0, b = 0;    //red color
             unsigned int rgb = ((unsigned int)r << 16 | (unsigned int)g << 8 | (unsigned int)b);
             pt.rgb = *reinterpret_cast<float*>(&rgb);
 
             visual_cloud_.push_back(pt);
         }
-        std::cout << std::endl;
+    }
 
+    void publishPointCloud2(ros::Time start_time,
+                            std::vector<double>& angles,
+                            std::vector<float>& ranges,
+                            std::vector<float>& intensities)
+    {
+        sensor_msgs::PointCloud2 pointcloud_msg;
+        pcl::PointCloud<pcl::PointXYZI> pointcloud_pcl;
+        pcl::PointXYZI point_xyzi;
 
-
-        //进行矫正
-        Lidar_Calibration(ranges,angles,
-                          startTime,
-                          endTime,
-                          tf_);
-
-        //转换为pcl::pointcloud for visuailization
-        for(int i = 0; i < ranges.size();i++)
-        {
-
-            if(ranges[i] < 0.05 || std::isnan(ranges[i]) || std::isinf(ranges[i]))
-                continue;
-
-            double x = ranges[i] * cos(angles[i]);
-            double y = ranges[i] * sin(angles[i]);
-
-
-            pcl::PointXYZRGB pt;
-            pt.x = x * cos(visualYaw) - y * sin(visualYaw) + visualPose.getOrigin().getX();
-            pt.y = x * sin(visualYaw) + y * cos(visualYaw) + visualPose.getOrigin().getY();
-            pt.z = 1.0;
-
-            unsigned char r = 0, g = 255, b = 0;    // green color
-            unsigned int rgb = ((unsigned int)r << 16 | (unsigned int)g << 8 | (unsigned int)b);
-            pt.rgb = *reinterpret_cast<float*>(&rgb);
-
-            visual_cloud_.push_back(pt);
+        for(int index = 0; index < angles.size(); ++index) {
+            point_xyzi.x = ranges[index] * cos(angles[index]);
+            point_xyzi.y = ranges[index] * sin(angles[index]);
+            point_xyzi.z = 0.0;
+            point_xyzi.intensity = intensities[index];
+            pointcloud_pcl.push_back(point_xyzi);
         }
 
-        //进行显示
-         g_PointCloudView.showCloud(visual_cloud_.makeShared());
+        pcl::toROSMsg(pointcloud_pcl, pointcloud_msg);
+        pointcloud_msg.header.frame_id = lidar_frame_;
+        pointcloud_msg.header.stamp = start_time;
+        pointcloud_pub_.publish(pointcloud_msg);
     }
 
 
@@ -150,18 +202,18 @@ public:
 
         tf::Stamped < tf::Pose > robot_pose;
         robot_pose.setIdentity();
-        robot_pose.frame_id_ = "base_laser";
+        robot_pose.frame_id_ = lidar_frame_;
         robot_pose.stamp_ = dt;   //设置为ros::Time()表示返回最近的转换关系
 
         // get the global pose of the robot
         try
         {
-            if(!tf_->waitForTransform("/odom", "/base_laser", dt, ros::Duration(0.5)))             // 0.15s 的时间可以修改
+            if(!tf_->waitForTransform(odom_frame_, lidar_frame_, dt, ros::Duration(0.5)))             // 0.15s 的时间可以修改
             {
                 ROS_ERROR("LidarMotion-Can not Wait Transform()");
                 return false;
             }
-            tf_->transformPose("/odom", robot_pose, odom_pose);
+            tf_->transformPose(odom_frame_, robot_pose, odom_pose);
         }
         catch (tf::LookupException& ex)
         {
@@ -199,7 +251,7 @@ public:
             tf::Stamped<tf::Pose> frame_base_pose,
             tf::Stamped<tf::Pose> frame_start_pose,
             tf::Stamped<tf::Pose> frame_end_pose,
-            std::vector<double>& ranges,
+            std::vector<float>& ranges,
             std::vector<double>& angles,
             int startIndex,
             int& beam_number)
@@ -237,7 +289,7 @@ public:
             frame_cur_pose.setRotation(cur_quaternion);
 
             // 如果激光雷达检测到的距离不为0
-            if(!tfFuzzyZero(ranges[startIndex + index])) {
+            if(!tfFuzzyZero(lidar_range) && !std::isinf(lidar_range)) {
 
                 tf::Vector3 lidar_point;
                 double lidar_x = lidar_range * cos(lidar_angle);
@@ -259,10 +311,10 @@ public:
                 angles[startIndex + index] = tfNormalizeAngle(tmp_angle - base_angle);
             }
 
-            ROS_INFO("\t%d\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t", 
-            startIndex + index, base_point.getX(), base_point.getY(), tf::getYaw(base_quaternion), 
-                                cur_point.getX(), cur_point.getY(), tf::getYaw(cur_quaternion), 
-            lidar_range, lidar_angle, ranges[startIndex + index], angles[startIndex + index]);
+            // ROS_INFO("\t%d\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t%lf\t", 
+            // startIndex + index, base_point.getX(), base_point.getY(), tf::getYaw(base_quaternion), 
+            //                     cur_point.getX(), cur_point.getY(), tf::getYaw(cur_quaternion), 
+            // lidar_range, lidar_angle, ranges[startIndex + index], angles[startIndex + index]);
         }
         //end of TODO
     }
@@ -280,7 +332,7 @@ public:
      * @param endTime　最后一束激光的时间戳
      * @param tf_
     */
-    void Lidar_Calibration(std::vector<double>& ranges,
+    void Lidar_Calibration(std::vector<float>& ranges,
                            std::vector<double>& angles,
                            ros::Time startTime,
                            ros::Time endTime,
@@ -320,7 +372,7 @@ public:
             return ;
         }
 
-        if(!getLaserPose(frame_end_pose,ros::Time(end_time / 1000000.0),tf_))
+        if(!getLaserPose(frame_end_pose,ros::Time(end_time / 1000000.0), tf_))
         {
             ROS_WARN("Not End Pose, Can not Calib");
             return ;
@@ -333,6 +385,9 @@ public:
         {
             //分段线性,时间段的大小为interpolation_time_duration
             double mid_time = start_time + time_inc * (i - start_index);
+            if(i == beamNumber - 1) {
+                nh_.param<std::string>("odom_frame", odom_frame_, "oodm");
+            }
             if(mid_time - start_time > interpolation_time_duration || (i == beamNumber - 1))
             {
                 cnt++;
@@ -359,30 +414,74 @@ public:
 
                 //更新时间
                 start_time = mid_time;
-                start_index = i;
+                start_index = i + 1; // 深蓝的程序在这里有BUG
                 frame_start_pose = frame_mid_pose;
             }
         }
     }
 
-public:
-    tf::TransformListener* tf_;
-    ros::NodeHandle nh_;
-    ros::Subscriber scan_sub_;
+    void publishScan(const sensor_msgs::LaserScanConstPtr& scan_msg,
+                     std::vector<float>& ranges,
+                     std::vector<double>& angles,
+                     tf::Stamped<tf::Pose>& start_pose,
+                     tf::Stamped<tf::Pose>& end_pose)
+    {
+        
+        sensor_msgs::LaserScan publish_msg;
+        publish_msg.header = scan_msg->header;
+        publish_msg.time_increment = scan_msg->time_increment;
+        publish_msg.scan_time = scan_msg->scan_time;
+        publish_msg.range_min = scan_msg->range_min;
+        publish_msg.range_max = scan_msg->range_max;
+        publish_msg.intensities = scan_msg->intensities;
 
-    pcl::PointCloud<pcl::PointXYZRGB> visual_cloud_;
+        publish_msg.angle_max = scan_msg->angle_max;
+        publish_msg.angle_min = scan_msg->angle_min;
+        publish_msg.angle_increment = scan_msg->angle_increment;
+
+        for(int alpha = 0; alpha < ranges.size(); ++alpha) publish_msg.ranges.push_back(0);
+        for(int alpha = ranges.size() - 1; alpha >= 0; --alpha) {
+            int index = (int)((angles[alpha] - publish_msg.angle_min) / publish_msg.angle_increment);
+            if(index >= 0 && index < ranges.size()) {
+                publish_msg.ranges[index] = ranges[alpha];
+            }
+        }
+
+        // 因为激光雷达的扫描顺序是倒的
+        // publish_msg.angle_max = scan_msg->angle_max;
+        // publish_msg.angle_min = scan_msg->angle_min - tf::getYaw(start_pose.getRotation()) + tf::getYaw(end_pose.getRotation());
+        // publish_msg.angle_increment = (publish_msg.angle_max - publish_msg.angle_min) / (float)(angles.size() - 1);
+        // for(int index = ranges.size() - 1; index >= 0; --index) {
+        //     publish_msg.ranges.push_back(ranges[index]);
+        // }
+
+        // if(fabs(- tf::getYaw(start_pose.getRotation()) + tf::getYaw(end_pose.getRotation()) > 0.01)) {
+        //     ROS_INFO("after- angle_min: %f, angle_max: %f, angle_increment: %f", publish_msg.angle_min, publish_msg.angle_max, publish_msg.angle_increment);
+        //     ROS_INFO("orign- angle_min: %f, angle_max: %f, angle_increment: %f", scan_msg->angle_min, scan_msg->angle_max, scan_msg->angle_increment);
+
+        //     float range_alpha, angle_alpha, range_beta, angle_beta;
+        //     for(int alpha = ranges.size() - 1; alpha >= 0; --alpha) {
+        //         range_alpha = ranges[alpha];
+        //         angle_alpha = angles[alpha];
+
+        //         int beta = ranges.size() - 1 - alpha;
+        //         range_beta = publish_msg.ranges[beta];
+        //         angle_beta = publish_msg.angle_min + beta * publish_msg.angle_increment;
+
+        //         ROS_INFO("\t%d\t%f\t%f\t%f\t%f\t", alpha, range_alpha, angle_alpha, range_beta, angle_beta);
+        //     }
+        // }
+        
+        scan_pub_.publish(publish_msg);
+    }
 };
 
 
-
-
-int main(int argc,char ** argv)
+int main(int argc, char ** argv)
 {
-    ros::init(argc,argv,"LidarMotionCalib");
+    ros::init(argc, argv, "LidarMotionCalib");
 
-    tf::TransformListener tf(ros::Duration(10.0));
-
-    LidarMotionCalibrator tmpLidarMotionCalib(&tf);
+    LidarMotionCalibrator tmpLidarMotionCalib(ros::NodeHandle("~"));
 
     ros::spin();
     return 0;
