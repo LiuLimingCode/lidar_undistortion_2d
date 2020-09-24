@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8.3)
-project(LaserUndistortion)
+project(lidar_undistortion_2d)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
@@ -32,7 +32,7 @@ find_package(PCL 1.7 REQUIRED)
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
 #  INCLUDE_DIRS include
-#  LIBRARIES LaserUndistortion
+#  LIBRARIES lidar_undistortion_2d
 #  CATKIN_DEPENDS roscpp rospy std_msgs
 #  DEPENDS system_lib
 )
@@ -54,7 +54,7 @@ message(status  ${PCL_INCLUDE_DIRS})
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
-add_executable(${PROJECT_NAME}_node src/LidarMotionUndistortion.cpp)
+add_executable(${PROJECT_NAME}_node src/lidar_undistortion_2d.cpp)
 
 
 ## Specify libraries to link a library or executable target against
@@ -103,7 +103,7 @@ add_executable(${PROJECT_NAME}_node src/LidarMotionUndistortion.cpp)
 #############
 
 ## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_LaserUndistortion.cpp)
+# catkin_add_gtest(${PROJECT_NAME}-test test/test_lidar_undistortion_2d.cpp)
 # if(TARGET ${PROJECT_NAME}-test)
 #   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()

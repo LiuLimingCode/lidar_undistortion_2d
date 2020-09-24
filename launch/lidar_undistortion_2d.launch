@@ -1,7 +1,7 @@
 <launch>
    <param name="use_sim_time" value="true"/>
 
-   <node name="LaserUndistortion_Node" pkg="LaserUndistortion"  type="LaserUndistortion_node" output="log">
+   <node name="lidar_undistortion_2d_node" pkg="lidar_undistortion_2d"  type="lidar_undistortion_2d_node" output="log">
       <param name="lidar_sub_topic" value="/scan"/>
       <param name="lidar_pub_topic" value="/lidar_undistortion/scan"/>
       <param name="enable_pub_pointcloud" value="true"/>

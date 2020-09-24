@@ -1,4 +1,4 @@
-# 2d_lidar_undistortion
+# lidar_undistortion_2d
 
 a ros package for lidar motion compensation
 
