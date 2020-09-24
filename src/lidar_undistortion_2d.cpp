@@ -68,7 +68,7 @@ public:
 
         // 得到最终点的时间
         int beamNum = scan_msg->ranges.size();
-        endTime = startTime + ros::Duration(0.00024953688262 * beamNum);
+        endTime = startTime + ros::Duration(scan_msg->time_increment * beamNum); // 0.00024953688262
 
         // 将数据复制出来
         std::vector<double> angles;
