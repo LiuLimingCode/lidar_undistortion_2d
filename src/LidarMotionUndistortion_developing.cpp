@@ -4,8 +4,11 @@
 #include <tf/transform_listener.h>
 #include <sensor_msgs/LaserScan.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <nav_msgs/Odometry.h>
 
+#include <pcl-1.7/pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#include <pcl-1.7/pcl/visualization/cloud_viewer.h>
 #include <pcl/point_cloud.h>
 #include <pcl_conversions/pcl_conversions.h>
 
@@ -14,24 +17,33 @@
 #include <fstream>
 #include <iostream>
 
+#include <boost/circular_buffer.hpp>
+
+pcl::visualization::CloudViewer g_PointCloudView("PointCloud View");
+
 class LidarMotionCalibrator
 {
 private:
     
     ros::NodeHandle nh_;
     ros::Subscriber scan_sub_;
+    ros::Subscriber odom_sub_;
     ros::Publisher scan_pub_;
     ros::Publisher pointcloud_pub_;
 
     tf::TransformListener* tf_;
 
     std::string scan_sub_topic_;
+    std::string odom_sub_topic_;
     std::string scan_pub_topic_;
     std::string pointcloud_pub_topic_;
     std::string lidar_frame_;
     std::string odom_frame_;
+    int odom_buffer_size_;
 
-    bool enable_pub_pointcloud_;
+    pcl::PointCloud<pcl::PointXYZRGB> visual_cloud_;
+
+    boost::circular_buffer<nav_msgs::Odometry> odometry_buffer_;
 
 public:
 
@@ -42,21 +54,30 @@ public:
 
         ros::NodeHandle nh_param("~");
         nh_param.param<std::string>("scan_sub_topic", scan_sub_topic_, "/scan");
+        nh_param.param<std::string>("odom_sub_topic", odom_sub_topic_, "/odom");
         nh_param.param<std::string>("scan_pub_topic", scan_pub_topic_, "/lidar_undistortion/scan");
-        nh_param.param<bool>("enable_pub_pointcloud", enable_pub_pointcloud_, false);
-        nh_param.param<std::string>("point_cloud_pub_topic", pointcloud_pub_topic_, "/lidar_undistortion/pointcloud");
+        nh_param.param<std::string>("pointcloud_pub_topic", pointcloud_pub_topic_, "/lidar_undistortion/pointcloud");
         nh_param.param<std::string>("lidar_frame", lidar_frame_, "laser_link");
         nh_param.param<std::string>("odom_frame", odom_frame_, "oodm");
+        nh_param.param<int>("odom_buffer_size", odom_buffer_size_, 100);
 
         scan_sub_ = nh_.subscribe(scan_sub_topic_, 10, &LidarMotionCalibrator::ScanCallBack, this);
+        odom_sub_ = nh_.subscribe(odom_sub_topic_, 10, &LidarMotionCalibrator::OdomCallBack, this);
         scan_pub_ = nh_.advertise<sensor_msgs::LaserScan>(scan_pub_topic_, 1);
         pointcloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(pointcloud_pub_topic_, 1);
+
+        odometry_buffer_.set_capacity(odom_buffer_size_);
     }
 
 
     ~LidarMotionCalibrator()
     {
         if(tf_!=NULL) delete tf_;
+    }
+
+    void OdomCallBack(const nav_msgs::OdometryConstPtr& odom_msg)
+    {
+        odometry_buffer_.push_front(*odom_msg);
     }
 
     // 拿到原始的激光数据来进行处理
@@ -99,6 +120,9 @@ public:
             return ;
         }
 
+        visual_cloud_.clear();
+        visualizeLaserScan(startTime, ranges, angles, 255, 0, 0);
+
         // ROS_INFO("calibration start");
         // 进行矫正
         Lidar_Calibration(ranges,
@@ -109,11 +133,52 @@ public:
 
         // ROS_INFO("calibration end");
 
-        if(enable_pub_pointcloud_) publishPointCloud2(startTime, angles, ranges, intensities);  
+        visualizeLaserScan(startTime, ranges, angles, 0, 0, 255);
+
+        publishPointCloud2(startTime, angles, ranges, intensities);  
         publishScan(scan_msg, ranges, angles, start_pose, end_pose);
+
+        g_PointCloudView.showCloud(visual_cloud_.makeShared());
     }
 
-    
+    void visualizeLaserScan(ros::Time start_time,
+                            std::vector<float>& ranges,
+                            std::vector<double>& angles,
+                            unsigned char r,
+                            unsigned char g,
+                            unsigned char b)
+    {
+        tf::Stamped<tf::Pose> visualPose;
+        if(!getLaserPose(visualPose, start_time, tf_))
+        {
+            ROS_WARN("Not visualPose,Can not Calib");
+            return ;
+        }
+
+        double visualYaw = tf::getYaw(visualPose.getRotation());
+
+        for(int i = 0; i < ranges.size();i++)
+        {
+
+            if(ranges[i] < 0.05 || std::isnan(ranges[i]) || std::isinf(ranges[i]))
+                continue;
+
+            double x = ranges[i] * cos(angles[i]);
+            double y = ranges[i] * sin(angles[i]);
+
+            pcl::PointXYZRGB pt;
+            pt.x = x * cos(visualYaw) - y * sin(visualYaw) + visualPose.getOrigin().getX();
+            pt.y = x * sin(visualYaw) + y * cos(visualYaw) + visualPose.getOrigin().getY();
+            pt.z = 1.0;
+
+            // pack r/g/b into rgb
+            // unsigned char r = 255, g = 0, b = 0;    //red color
+            unsigned int rgb = ((unsigned int)r << 16 | (unsigned int)g << 8 | (unsigned int)b);
+            pt.rgb = *reinterpret_cast<float*>(&rgb);
+
+            visual_cloud_.push_back(pt);
+        }
+    }
 
     void publishPointCloud2(ros::Time start_time,
                             std::vector<double>& angles,
@@ -136,6 +201,68 @@ public:
         pointcloud_msg.header.frame_id = lidar_frame_;
         pointcloud_msg.header.stamp = start_time;
         pointcloud_pub_.publish(pointcloud_msg);
+    }
+
+    void getLaserPose(tf::Stamped<tf::Pose> &odom_pose,
+                      ros::Time dt,
+                      bool continue_search = false)
+    {
+        if(last_index >= odometry_buffer_.size()) throw ros::Exception("received too less odom data"); 
+        if(odometry_buffer_.size() < 2) throw ros::Exception("received too less odom data"); 
+        if(odometry_buffer_.front().header.stamp < dt) throw ros::Exception("odom data is too old");
+        if(odometry_buffer_.back().header.stamp > dt) throw ros::Exception("lidar data is too old");
+
+        static int last_index = 0;
+        tf::Stamped<tf::Pose> result;
+        result.setIdentity();
+        result.frame_id_ = lidar_frame_;
+        result.stamp_ = dt;
+
+        int index;
+        if(!continue_search) {
+            // 使用二分搜索查找与激光雷达开始帧对应的odom数据，复杂度O(log2 N)
+            last_index = 0;
+            int left = 0, right = odometry_buffer_.size() - 1, mid;
+            while(left <= right) {
+                mid = (left + right) / 2;
+                if(odometry_buffer_[mid].header.stamp > dt && odometry_buffer_[mid + 1].header.stamp >= dt) {
+                    left = mid + 1;
+                }
+                else if(odometry_buffer_[mid].header.stamp <= dt && odometry_buffer_[mid + 1].header.stamp < dt) {
+                    right = mid - 1;
+                }
+                else if(odometry_buffer_[mid].header.stamp >= dt && odometry_buffer_[mid + 1].header.stamp <= dt) break;
+                else ros::Exception("error in binary search");
+            }
+            if(left > right) return throw ros::Exception("failed to find Laser Pose");
+            
+            index = mid;
+        }
+        else {
+            // 使用for循环搜索，复杂度O(N)
+            index = last_index;
+            while(index >= 0 && odometry_buffer_[index].header.stamp < dt) --index;
+            for(; index < odometry_buffer_.size() - 1; ++index) {
+                if(odometry_buffer_[index].header.stamp >= dt && odometry_buffer_[index + 1].header.stamp <= dt) break;
+            }
+            if(odometry_buffer_.size() - 1 == index) return throw ros::Exception("failed to find Laser Pose");
+        }
+
+        const geometry_msgs::Pose& front_pose = odometry_buffer_[index].pose.pose;
+        const geometry_msgs::Pose& back_pose = odometry_buffer_[index + 1].pose.pose;
+        const ros::Time& front_stamp = odometry_buffer_[index].header.stamp;
+        const ros::Time& back_stamp = odometry_buffer_[index + 1].header.stamp;
+
+        tf::Vector3 tf_front_position(front_pose.position.x, front_pose.position.y, front_pose.position.z);
+        tf::Vector3 tf_back_position(back_pose.position.x, back_pose.position.y, back_pose.position.z);
+        tf::Quaternion tf_front_quaternion(front_pose.orientation.x, front_pose.orientation.y, front_pose.orientation.z, front_pose.orientation.w);
+        tf::Quaternion tf_back_quaternion(back_pose.orientation.x, back_pose.orientation.y, back_pose.orientation.z, back_pose.orientation.w);
+        double lerp_time = (front_stamp - dt).toSec() / (front_stamp - back_stamp).toSec();
+        result.setOrigin(tf_front_position.lerp(tf_back_position, lerp_time));
+        result.setRotation(tf_front_quaternion.slerp(tf_back_quaternion, lerp_time));
+
+        last_index = index;
+        odom_pose = result;
     }
 
 
@@ -338,9 +465,6 @@ public:
         {
             //分段线性,时间段的大小为interpolation_time_duration
             double mid_time = start_time + time_inc * (i - start_index);
-            if(i == beamNumber - 1) {
-                nh_.param<std::string>("odom_frame", odom_frame_, "oodm");
-            }
             if(mid_time - start_time > interpolation_time_duration || (i == beamNumber - 1))
             {
                 cnt++;
@@ -394,9 +518,7 @@ public:
 
         for(int alpha = 0; alpha < ranges.size(); ++alpha) publish_msg.ranges.push_back(0);
         for(int alpha = ranges.size() - 1; alpha >= 0; --alpha) {
-            double angle = (angles[alpha] < 0 || tfFuzzyZero(angles[alpha])) ? angles[alpha] + 2 * M_PI : angles[alpha];
-            angle += publish_msg.angle_min;
-            int index = (int)((angle - publish_msg.angle_min) / publish_msg.angle_increment);
+            int index = (int)((angles[alpha] - publish_msg.angle_min) / publish_msg.angle_increment);
             if(index >= 0 && index < ranges.size()) {
                 publish_msg.ranges[index] = ranges[alpha];
             }
