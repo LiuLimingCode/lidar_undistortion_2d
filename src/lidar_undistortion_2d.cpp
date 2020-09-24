@@ -110,7 +110,7 @@ public:
         // ROS_INFO("calibration end");
 
         if(enable_pub_pointcloud_) publishPointCloud2(startTime, angles, ranges, intensities);  
-        publishScan(scan_msg, ranges, angles, start_pose, end_pose);
+        publishScan(scan_msg, ranges, angles, intensities, start_pose, end_pose);
     }
 
     
@@ -376,6 +376,7 @@ public:
     void publishScan(const sensor_msgs::LaserScanConstPtr& scan_msg,
                      std::vector<float>& ranges,
                      std::vector<double>& angles,
+                     std::vector<float>& intensities,
                      tf::Stamped<tf::Pose>& start_pose,
                      tf::Stamped<tf::Pose>& end_pose)
     {
@@ -386,19 +387,22 @@ public:
         publish_msg.scan_time = scan_msg->scan_time;
         publish_msg.range_min = scan_msg->range_min;
         publish_msg.range_max = scan_msg->range_max;
-        publish_msg.intensities = scan_msg->intensities;
 
         publish_msg.angle_max = scan_msg->angle_max;
         publish_msg.angle_min = scan_msg->angle_min;
         publish_msg.angle_increment = scan_msg->angle_increment;
 
-        for(int alpha = 0; alpha < ranges.size(); ++alpha) publish_msg.ranges.push_back(0);
+        for(int alpha = 0; alpha < ranges.size(); ++alpha) {
+            publish_msg.ranges.push_back(0);
+            publish_msg.intensities.push_back(0);
+        }
         for(int alpha = ranges.size() - 1; alpha >= 0; --alpha) {
             double angle = (angles[alpha] < 0 || tfFuzzyZero(angles[alpha])) ? angles[alpha] + 2 * M_PI : angles[alpha];
             angle += publish_msg.angle_min;
             int index = (int)((angle - publish_msg.angle_min) / publish_msg.angle_increment);
             if(index >= 0 && index < ranges.size()) {
                 publish_msg.ranges[index] = ranges[alpha];
+                publish_msg.intensities[index] = intensities[alpha];
             }
         }
 
