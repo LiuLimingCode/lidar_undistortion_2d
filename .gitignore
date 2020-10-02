@@ -1,0 +1,6 @@
+.vscode
+build
+devel
+data
+bag
+.catkin_workspace

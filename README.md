@@ -16,6 +16,26 @@ This ros package uses odom transform data to correct motion distortion of a 2D L
 
 in this picture, the yellow rectangle represents the pose of robot, the red poindcloud represents the origin lidar data, and the white pointcloud represents the lidar data after compensation.
 
+## Test with rosbag
+1. compile the project and `source devel/setup.sh`
+2. 
+```
+roslaunch lidar_undistortion_2d test_lidar_undistortion_2d.launch enable_undistortion:=true
+```
+3. find `/bag/sensor_data.bag`
+```
+rosbag play --clock sensor_data.bag
+```
+4. result 
+
+the gif showed below represents location with orign lidar data.
+
+![](doc/lidar_orign.gif)
+
+the gif showed below represents location with undistortion lidar data.
+
+![](doc/lidar_undistortion.gif)
+
 ## Reference
 
 https://github.com/elewu/2d_lidar_undistortion/

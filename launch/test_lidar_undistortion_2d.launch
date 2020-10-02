@@ -1,0 +1,84 @@
+<!-- 通过传感器采集到的rosbag数据，重新进行数据处理 -->
+<launch>
+
+  <arg name="scan_orign_topic" default="/scan"/>
+  <arg name="scan_topic" default="/scan_undistortion"/>
+  <arg name="imu_topic" default="/imu_data"/>
+  <arg name="map_topic" default="/map"/>
+  <arg name="odom_topic" default="/odom"/>
+  <arg name="odom_rf2o_topic" default="/odom_rf2o"/>
+  <arg name="base_frame" default="base_footprint"/>
+  <arg name="map_frame" default="map"/>
+  <arg name="odom_frame" default="odom"/>
+  <arg name="imu_frame" default="imu_link"/>
+  <arg name="laser_frame" default="laser_link"/>
+
+  <arg name="enable_undistortion" default="false"/>
+
+  <param name="/use_sim_time" value="true"/>
+
+
+  <node name="odom_ekf_relay" pkg="topic_tools" type="relay" unless="$(arg enable_undistortion)"
+        args="$(arg scan_orign_topic) $(arg scan_topic)"/>
+  <node name="lidar_undistortion_2d_node" pkg="lidar_undistortion_2d" type="lidar_undistortion_2d_node" if="$(arg enable_undistortion)" output="screen">
+    <param name="scan_sub_topic" value="$(arg scan_orign_topic)"/>
+    <param name="scan_pub_topic" value="$(arg scan_topic)"/>
+    <param name="enable_pub_pointcloud" value="false"/>
+    <param name="lidar_frame" value="$(arg laser_frame)"/>
+    <param name="odom_frame" value="$(arg odom_frame)"/>
+    <param name="lidar_scan_time_gain" value="1000.0"/>
+  </node>
+
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+
+    <remap from="map" to="$(arg map_topic)"/>
+    <remap from="scan" to="$(arg scan_topic)"/>
+    <param name="odom_frame_id" value="$(arg odom_frame)"/>
+    <param name="base_frame_id" value="$(arg base_frame)"/>
+    <param name="global_frame_id" value="$(arg map_frame)"/>
+    <param name="tf_broadcast" value="true"/>
+    <param name="use_map_topic" value="true"/> 
+    <param name="first_map_only" value="true"/>
+
+    <param name="min_particles" value="500"/>
+    <param name="max_particles" value="5000"/>
+    <param name="kld_err" value="0.05"/>
+    <param name="kld_z" value="0.99"/>
+
+    <param name="update_min_d" value="0.0"/>
+    <param name="update_min_a" value="0.1"/>
+    <param name="resample_interval" value="2"/>
+    <param name="transform_tolerance" value="0.2"/>
+    <param name="recovery_alpha_slow" value="0.0"/>
+    <param name="recovery_alpha_fast" value="0.1"/>
+
+    <param name="initial_pose_x" value="8.01734161377"/>
+    <param name="initial_pose_y" value="-14.7525091171"/>
+    <param name="initial_pose_a" value="1.576264"/>
+    <param name="initial_cov_xx" value="0.25"/>
+    <param name="initial_cov_yy" value="0.25"/>
+    <param name="initial_cov_aa" value="0.2"/>
+
+    <param name="laser_min_range" value="-1.0"/>
+    <param name="laser_max_range" value="-1.0"/>
+    <param name="laser_max_beams" value="30"/>
+    <param name="laser_z_hit" value="0.5"/>
+    <param name="laser_z_short" value="0.05"/>
+    <param name="laser_z_max" value="0.05"/>
+    <param name="laser_z_rand" value="0.5"/>
+    <param name="laser_sigma_hit" value="0.2"/>
+    <param name="laser_lambda_short" value="0.1"/>
+    <param name="laser_likelihood_max_dist" value="2.0"/>
+    <param name="laser_model_type" value="likelihood_field"/>
+
+    <param name="odom_model_type" value="diff-corrected"/>
+    <param name="odom_alpha1" value="0.2"/>
+    <param name="odom_alpha2" value="0.2"/>
+    <param name="odom_alpha3" value="0.2"/>
+    <param name="odom_alpha4" value="0.2"/>
+    <param name="odom_alpha5" value="0.2"/>
+  </node>
+
+  <node pkg="rviz" type="rviz" name="rviz" args="-d $(find lidar_undistortion_2d)/launch/test_lidar_undistortion_2d.rviz"/>
+
+</launch>

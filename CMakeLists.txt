@@ -56,7 +56,6 @@ message(status  ${PCL_INCLUDE_DIRS})
 ## The recommended prefix ensures that target names across packages don't collide
 add_executable(${PROJECT_NAME}_node src/lidar_undistortion_2d.cpp)
 
-
 ## Specify libraries to link a library or executable target against
  target_link_libraries(${PROJECT_NAME}_node
   ${catkin_LIBRARIES}

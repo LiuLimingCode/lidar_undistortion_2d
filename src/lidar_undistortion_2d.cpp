@@ -32,6 +32,7 @@ private:
     std::string odom_frame_;
 
     bool enable_pub_pointcloud_;
+    double lidar_scan_time_gain_;
 
 public:
 
@@ -47,10 +48,11 @@ public:
         nh_param.param<std::string>("point_cloud_pub_topic", pointcloud_pub_topic_, "/lidar_undistortion/pointcloud");
         nh_param.param<std::string>("lidar_frame", lidar_frame_, "laser_link");
         nh_param.param<std::string>("odom_frame", odom_frame_, "oodm");
+        nh_param.param<double>("lidar_scan_time_gain", lidar_scan_time_gain_, 1.0);
 
         scan_sub_ = nh_.subscribe(scan_sub_topic_, 10, &LidarMotionCalibrator::ScanCallBack, this);
         scan_pub_ = nh_.advertise<sensor_msgs::LaserScan>(scan_pub_topic_, 1);
-        pointcloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(pointcloud_pub_topic_, 1);
+        if(enable_pub_pointcloud_) pointcloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(pointcloud_pub_topic_, 1);
     }
 
 
@@ -68,7 +70,7 @@ public:
 
         // 得到最终点的时间
         int beamNum = scan_msg->ranges.size();
-        endTime = startTime + ros::Duration(scan_msg->time_increment * beamNum); // 0.00024953688262
+        endTime = startTime + ros::Duration(scan_msg->time_increment * lidar_scan_time_gain_ * beamNum);
 
         // 将数据复制出来
         std::vector<double> angles;
