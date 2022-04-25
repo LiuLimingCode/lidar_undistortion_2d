@@ -39,6 +39,7 @@ roslaunch lidar_undistortion_2d test_lidar_undistortion_2d.launch enable_undisto
 rosbag play --clock --pause sensor_data.bag
 ```
 remind: '--pause' is essential. otherwise it may lead to error. 
+
 4. result 
 
 the gif showed below represents location with orign lidar data.

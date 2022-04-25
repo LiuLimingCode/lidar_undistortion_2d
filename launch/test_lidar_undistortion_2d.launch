@@ -26,7 +26,7 @@
     <param name="enable_pub_pointcloud" value="false"/>
     <param name="lidar_frame" value="$(arg laser_frame)"/>
     <param name="odom_frame" value="$(arg odom_frame)"/>
-    <param name="lidar_scan_time_gain" value="1000.0"/>
+    <param name="lidar_scan_time_gain" value="1000.0"/> <!--remind: in most cases, the value of lidar_scan_time_gain is 1.0, but in this test case, the scan_time in '/scan' topic is wrong-->
   </node>
 
   <node pkg="amcl" type="amcl" name="amcl" output="screen">
