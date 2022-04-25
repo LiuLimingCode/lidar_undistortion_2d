@@ -26,7 +26,7 @@ enable_pub_pointcloud  | bool | 是否将校正后的数据重新封装为LaserS
 pointcloud_pub_topic | bool | 经过运动畸变矫正重新封装LaserScan消息话题名
 lidar_frame| string | 激光雷达数据的坐标系
 odom_frame | string | Odometry数据的坐标系
-lidar_scan_time_gain | double | 激光雷达单次扫描时间系数
+lidar_scan_time_gain | double | 激光雷达单次扫描时间系数（正常情况下是1.0，但是有些激光雷达的驱动包在计算scan_time时有问题，所以这里乘一个系数）
 
 ## Test with rosbag
 1. compile the project and `source devel/setup.sh`
@@ -36,8 +36,9 @@ roslaunch lidar_undistortion_2d test_lidar_undistortion_2d.launch enable_undisto
 ```
 3. find `/bag/sensor_data.bag`
 ```
-rosbag play --clock sensor_data.bag
+rosbag play --clock --pause sensor_data.bag
 ```
+remind: '--pause' is essential. otherwise it may lead to error. 
 4. result 
 
 the gif showed below represents location with orign lidar data.
